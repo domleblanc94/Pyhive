@@ -6,6 +6,7 @@ import logging
 from aiohttp import ClientSession
 
 from .devices.action import HiveAction
+from .devices.ev import HiveEV
 from .devices.heating import Climate
 from .devices.hotwater import WaterHeater
 from .devices.hub import HiveHub
@@ -41,6 +42,7 @@ class Hive(HiveSession):
         super().__init__(username, password, websession)
         self.session = self
         self.action = HiveAction(self.session)
+        self.ev = HiveEV(self.session)
         self.heating = Climate(self.session)
         self.hotwater = WaterHeater(self.session)
         self.hub = HiveHub(self.session)

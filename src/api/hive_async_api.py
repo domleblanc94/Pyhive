@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import time
+from urllib.parse import quote
 
 from aiohttp import (
     ClientError,
@@ -14,11 +15,23 @@ from aiohttp import (
 )
 
 from ..helper.const import HTTP_FORBIDDEN, HTTP_UNAUTHORIZED
-from ..helper.hive_exceptions import FileInUse, HiveApiError, HiveAuthError, NoApiToken
+from ..helper.hive_exceptions import (
+    FileInUse,
+    HiveApiError,
+    HiveAuthError,
+    HiveConnectionError,
+    NoApiToken,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 _REQUEST_ERRORS = (ClientError, OSError, RuntimeError, json.JSONDecodeError)
+
+_EV_BASE_URL = "https://hive.bgchprod.info/"
+# Public application identifier from Hive's app/web configuration, not an account
+# credential. The user's Cognito ID token is still required for every request.
+_EV_APP_KEY = "7Y1kj281ay64CAik9YTcnaFNqdiSPksW5XP2GZ4T"  # pragma: allowlist secret
+_EV_ACCEPT = "application/vnd.alertme.zoo-6.5.0+json"
 
 
 class HiveApiAsync:
@@ -136,6 +149,62 @@ class HiveApiAsync:
     async def get_all(self):
         """Build and query all endpoint."""
         return await self._call_endpoint("get", self.urls["all"])
+
+    async def _get_ev(self, path: str, *, nodes: bool = False) -> dict:
+        """Read the EV service without logging account URLs or response bodies.
+
+        This deliberately does not use ``request``: EV calls require a Bearer
+        token and different headers from the legacy smart-home API.
+        """
+        token = self.session.tokens.token_data.get("token") if self.session else None
+        if not isinstance(token, str) or not token:
+            raise HiveAuthError("Hive EV authorization is missing")
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "pyhive-integration",
+            "x-api-key": _EV_APP_KEY,
+        }
+        if nodes:
+            headers.update(
+                {
+                    "Accept": _EV_ACCEPT,
+                    "X-AlertMe-Client": "Honeycomb React Native App",
+                }
+            )
+        try:
+            async with self._get_websession().request(
+                "GET",
+                _EV_BASE_URL + path,
+                headers=headers,
+                timeout=ClientTimeout(total=self.timeout),
+                allow_redirects=False,
+                ssl=True,
+            ) as response:
+                if response.status in (HTTP_UNAUTHORIZED, HTTP_FORBIDDEN):
+                    raise HiveAuthError("Hive EV authorization was rejected")
+                if response.status == 429 or response.status >= 500:  # noqa: PLR2004
+                    raise HiveConnectionError("Hive EV is temporarily unavailable")
+                if response.status != 200:  # noqa: PLR2004
+                    raise HiveApiError("Hive EV did not return the expected data")
+                payload = await response.json(content_type=None)
+                if not isinstance(payload, dict):
+                    raise HiveApiError("Hive EV returned an invalid representation")
+                return payload
+        except (ClientError, OSError, asyncio.TimeoutError):
+            raise HiveConnectionError("Cannot connect to Hive EV") from None
+        except (ValueError, UnicodeError):
+            raise HiveApiError("Hive EV returned invalid data") from None
+
+    async def get_ev_homes(self, user_id: str) -> dict:
+        """Read homes for the Cognito username, rather than the legacy user ID."""
+        return await self._get_ev("home/owner/" + quote(user_id, safe=""))
+
+    async def get_ev_nodes(self, home_id: str) -> dict:
+        """Read reported EV features, not the 6.6 broker-only inventory."""
+        return await self._get_ev(
+            "omnia/nodes?homeId=" + quote(home_id, safe=""), nodes=True
+        )
 
     async def get_devices(self):
         """Call the get devices endpoint."""

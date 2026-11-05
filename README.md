@@ -28,6 +28,37 @@ A Python library for interfacing with the [Hive](https://www.hivehome.com/) smar
 | **Sensors** | Motion, contact (open/close), battery level, online status |
 | **Hub / Sense** | Smoke, CO, dog bark, glass break detection |
 
+### Optional asynchronous EV charger monitoring
+
+After starting the existing Hive session, use `await hive.ev.get_devices()` to
+read chargers from Hive's separate EV service. It returns a dictionary keyed by
+the stable EVSE node ID. Each `EVCharger` snapshot contains `node_id`, `home_id`,
+`name`, `status`, `transaction_active`, `power_w`, `session_energy_wh`, and
+`session_duration_s`. `hive.ev.statuses` lists the recognized lowercase statuses.
+
+Only reported values are returned; pending target values are never substituted.
+Missing or unsupported measurements remain `None`. An active transaction may
+still be scheduled, and `available` does not prove whether a cable is connected.
+This API provides monitoring only: there are no EV control, unlock, schedule, or
+charging-override methods.
+
+EV reads reuse the session's authentication, token refresh, and HTTP session.
+They are opt-in and do not run as part of legacy heating/light discovery or
+polling. Polling consumers should use a separate coordinator (for example, once
+per minute) and mark only their EV entities unavailable on an EV-service error.
+`HiveConnectionError` indicates a transport/service failure, `HiveApiError` an
+incompatible response, and `HiveReauthRequired` a sign-in that must be renewed.
+Errors are not converted to an empty device list.
+
+The initial implementation covers Hive EVSE nodes observed with an Alfen Hive
+charger. The EV reader itself does not require hub metadata, but the existing
+`start_session` still requires legacy Hive devices/products. EV-only account
+setup is not implemented by this change. File-mode sessions return no EV
+chargers and make no EV-service requests.
+The new monitoring API currently requires `apyhiveapi`; the separate legacy sync
+transport does not implement these EV endpoints and returns an unsupported-API
+error if EV monitoring is requested. Existing sync smart-home methods are unchanged.
+
 ---
 
 ## Installation
